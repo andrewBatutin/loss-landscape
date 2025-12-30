@@ -9,10 +9,6 @@
 
 ## Content
 
-Here's the expanded version:
-
----
-
 I read 50+ papers last year. Retained maybe 5 insights.
 
 Problem: papers are write-once. Understanding requires iteration.
