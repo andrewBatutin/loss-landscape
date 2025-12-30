@@ -9,7 +9,7 @@ vault/                  # ← Obsidian opens this
   concepts/             # Atomic ideas
   papers/               # Paper breakdowns  
   projects/             # Mini research
-  inbox.md              # Raw idea dump
+  inbox/                # Raw idea dump
   published/            # Post archive
 
 prototypes/             # ← VS Code / Claude Code
@@ -25,10 +25,11 @@ prototypes/             # ← VS Code / Claude Code
 
 ## Workflow
 
-1. **Capture** → dump to `vault/inbox.md` (phone/Obsidian)
-2. **Process** → create concept node, link to paper
-3. **Prototype** → build code in `prototypes/experiments/`
-4. **Publish** → ship to HF Spaces, post to LinkedIn, archive in `vault/published/`
+1. **Capture** → dump to `vault/inbox.md` (phone/Obsidian). Can be done with AI automation
+2. **Paper** -> capture essence of paper . Can be done with AI automation.
+3. **Process** → create concept node, link to paper. Important to do it by hand
+4. **Prototype** → build code in `prototypes/experiments/`. Important to do it by hand
+5. **Publish** → ship to HF Spaces, post to LinkedIn, archive in `vault/published/`. Can be done with AI automation.
 
 ## Linking Convention
 
