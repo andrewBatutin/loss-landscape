@@ -6,16 +6,21 @@ Tests the claim from "LLMs are Bayesian in Expectation":
 - Expected: ~4x variance reduction
 
 Usage:
+    # Local MLX models
     python calibrate_llm_judge.py --model mlx-community/Qwen2.5-1.5B-Instruct-4bit
-    python calibrate_llm_judge.py --model mlx-community/Llama-3.2-3B-Instruct-4bit
+
+    # OpenAI models
+    python calibrate_llm_judge.py --model gpt-4o-mini --provider openai
+    python calibrate_llm_judge.py --model gpt-4o --provider openai
 """
 
 import argparse
 import json
+import os
 import random
 import time
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import Callable, Literal
 
 from eval.test_pairs import get_pairs, get_balanced_pairs
 
@@ -79,9 +84,9 @@ def load_model(model_name: str):
         return None, None
 
 
-def judge_single(model, tokenizer, resp_a: str, resp_b: str, generate_fn) -> str:
-    """Single forward pass, return 'A' or 'B'."""
-    prompt = f"""Which response is better? Answer with just the letter A or B.
+def make_judge_prompt(resp_a: str, resp_b: str) -> str:
+    """Create the judge prompt."""
+    return f"""Which response is better? Answer with just the letter A or B.
 
 Question context doesn't matter - just compare these two responses:
 
@@ -91,10 +96,11 @@ Response B: {resp_b}
 
 Better response (A or B):"""
 
-    output = generate_fn(model, tokenizer, prompt=prompt, max_tokens=5)
+
+def parse_judge_output(output: str) -> str:
+    """Parse model output to A or B."""
     output = output.strip().upper()
 
-    # Parse response
     if "A" in output and "B" not in output:
         return "A"
     elif "B" in output and "A" not in output:
@@ -107,37 +113,124 @@ Better response (A or B):"""
         return random.choice(["A", "B"])
 
 
-def judge_calibrated(model, tokenizer, resp_a: str, resp_b: str, generate_fn, k: int = 20) -> float:
-    """Shuffle k times, return confidence score for A."""
+# ============ MLX Backend ============
+
+def judge_single_mlx(model, tokenizer, resp_a: str, resp_b: str, generate_fn) -> str:
+    """Single forward pass with MLX, return 'A' or 'B'."""
+    prompt = make_judge_prompt(resp_a, resp_b)
+    output = generate_fn(model, tokenizer, prompt=prompt, max_tokens=5)
+    return parse_judge_output(output)
+
+
+def judge_calibrated_mlx(model, tokenizer, resp_a: str, resp_b: str, generate_fn, k: int = 20) -> float:
+    """Shuffle k times with MLX, return confidence score for A."""
     votes_for_a = 0
 
     for i in range(k):
         if i % 2 == 0:
-            choice = judge_single(model, tokenizer, resp_a, resp_b, generate_fn)
+            choice = judge_single_mlx(model, tokenizer, resp_a, resp_b, generate_fn)
             votes_for_a += (choice == "A")
         else:
-            choice = judge_single(model, tokenizer, resp_b, resp_a, generate_fn)
+            choice = judge_single_mlx(model, tokenizer, resp_b, resp_a, generate_fn)
             votes_for_a += (choice == "B")
 
     return votes_for_a / k
 
 
-def evaluate_pair(model, tokenizer, pair: dict, generate_fn, k: int = 20) -> JudgeResult:
-    """Evaluate a single pair with all methods."""
+# ============ OpenAI Backend ============
+
+def get_openai_client():
+    """Get OpenAI client."""
+    try:
+        from openai import OpenAI
+        api_key = os.environ.get("OPENAI_API_KEY")
+        if not api_key:
+            print("Error: OPENAI_API_KEY environment variable not set")
+            return None
+        return OpenAI(api_key=api_key)
+    except ImportError:
+        print("OpenAI not available. Install with: pip install openai")
+        return None
+
+
+def judge_single_openai(client, model: str, resp_a: str, resp_b: str, verbose: bool = False) -> str:
+    """Single forward pass with OpenAI, return 'A' or 'B'."""
+    prompt = make_judge_prompt(resp_a, resp_b)
+
+    response = client.chat.completions.create(
+        model=model,
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=5,
+        temperature=0,
+    )
+
+    output = response.choices[0].message.content
+
+    if verbose:
+        print(f"\n{'─' * 40}")
+        print(f"INPUT:\n{prompt[:300]}...")
+        print(f"OUTPUT: {output}")
+        print(f"{'─' * 40}\n")
+
+    return parse_judge_output(output)
+
+
+def judge_calibrated_openai(client, model: str, resp_a: str, resp_b: str, k: int = 20, verbose: bool = False) -> float:
+    """Shuffle k times with OpenAI, return confidence score for A."""
+    votes_for_a = 0
+
+    for i in range(k):
+        if i % 2 == 0:
+            choice = judge_single_openai(client, model, resp_a, resp_b, verbose and i == 0)
+            votes_for_a += (choice == "A")
+        else:
+            choice = judge_single_openai(client, model, resp_b, resp_a, verbose and i == 1)
+            votes_for_a += (choice == "B")
+
+    return votes_for_a / k
+
+
+# ============ Generic Interface ============
+
+
+def evaluate_pair_mlx(model, tokenizer, pair: dict, generate_fn, k: int = 20) -> JudgeResult:
+    """Evaluate a single pair with MLX backend."""
     resp_a = pair["response_a"]
     resp_b = pair["response_b"]
     ground_truth = pair["better"]
 
-    # Single pass: A first
-    pred_ab = judge_single(model, tokenizer, resp_a, resp_b, generate_fn)
+    pred_ab = judge_single_mlx(model, tokenizer, resp_a, resp_b, generate_fn)
     pred_ab_normalized = "a" if pred_ab == "A" else "b"
 
-    # Single pass: B first (swapped)
-    pred_ba_raw = judge_single(model, tokenizer, resp_b, resp_a, generate_fn)
+    pred_ba_raw = judge_single_mlx(model, tokenizer, resp_b, resp_a, generate_fn)
     pred_ba_normalized = "b" if pred_ba_raw == "A" else "a"
 
-    # Calibrated: k shuffles
-    confidence_a = judge_calibrated(model, tokenizer, resp_a, resp_b, generate_fn, k)
+    confidence_a = judge_calibrated_mlx(model, tokenizer, resp_a, resp_b, generate_fn, k)
+
+    return JudgeResult(
+        pair_id=pair["id"],
+        category=pair["category"],
+        ground_truth=ground_truth,
+        pred_single_ab=pred_ab_normalized,
+        pred_single_ba=pred_ba_normalized,
+        pred_calibrated=confidence_a,
+        is_consistent=(pred_ab_normalized == pred_ba_normalized),
+    )
+
+
+def evaluate_pair_openai(client, model: str, pair: dict, k: int = 20, verbose: bool = False) -> JudgeResult:
+    """Evaluate a single pair with OpenAI backend."""
+    resp_a = pair["response_a"]
+    resp_b = pair["response_b"]
+    ground_truth = pair["better"]
+
+    pred_ab = judge_single_openai(client, model, resp_a, resp_b, verbose)
+    pred_ab_normalized = "a" if pred_ab == "A" else "b"
+
+    pred_ba_raw = judge_single_openai(client, model, resp_b, resp_a, verbose)
+    pred_ba_normalized = "b" if pred_ba_raw == "A" else "a"
+
+    confidence_a = judge_calibrated_openai(client, model, resp_a, resp_b, k, verbose)
 
     return JudgeResult(
         pair_id=pair["id"],
@@ -383,9 +476,8 @@ def make_generate_logger(log_file: str = None, verbose: bool = False) -> Callabl
     return logged_generate
 
 
-def run_evaluation(model_name: str, n_pairs: int = 30, k: int = 20, verbose: bool = False):
-    """Run full evaluation with real model."""
-
+def run_evaluation_mlx(model_name: str, n_pairs: int = 30, k: int = 20, verbose: bool = False):
+    """Run evaluation with MLX backend."""
     model, tokenizer = load_model(model_name)
     if model is None:
         print("Failed to load model")
@@ -400,7 +492,7 @@ def run_evaluation(model_name: str, n_pairs: int = 30, k: int = 20, verbose: boo
     start_time = time.time()
 
     for i, pair in enumerate(pairs):
-        result = evaluate_pair(model, tokenizer, pair, generate_fn, k=k)
+        result = evaluate_pair_mlx(model, tokenizer, pair, generate_fn, k=k)
         results.append(result)
 
         if (i + 1) % 5 == 0:
@@ -408,6 +500,37 @@ def run_evaluation(model_name: str, n_pairs: int = 30, k: int = 20, verbose: boo
             eta = elapsed / (i + 1) * (len(pairs) - i - 1)
             print(f"  [{i + 1}/{len(pairs)}] ETA: {eta:.0f}s")
 
+    return finalize_results(model_name, results, n_pairs, k)
+
+
+def run_evaluation_openai(model_name: str, n_pairs: int = 30, k: int = 20, verbose: bool = False):
+    """Run evaluation with OpenAI backend."""
+    client = get_openai_client()
+    if client is None:
+        return None, None
+
+    pairs = get_balanced_pairs(n=n_pairs)
+    print(f"Evaluating {len(pairs)} pairs with k={k} calibration rounds...")
+    print(f"Using OpenAI model: {model_name}")
+    print(f"Estimated API calls: {len(pairs) * (2 + k)}")
+
+    results = []
+    start_time = time.time()
+
+    for i, pair in enumerate(pairs):
+        result = evaluate_pair_openai(client, model_name, pair, k=k, verbose=verbose)
+        results.append(result)
+
+        if (i + 1) % 5 == 0:
+            elapsed = time.time() - start_time
+            eta = elapsed / (i + 1) * (len(pairs) - i - 1)
+            print(f"  [{i + 1}/{len(pairs)}] ETA: {eta:.0f}s")
+
+    return finalize_results(model_name, results, n_pairs, k)
+
+
+def finalize_results(model_name: str, results: list, n_pairs: int, k: int):
+    """Compute metrics, print report, save results."""
     metrics = compute_metrics(results)
     print_report(model_name, metrics, results, k)
 
@@ -440,7 +563,7 @@ def run_evaluation(model_name: str, n_pairs: int = 30, k: int = 20, verbose: boo
         ]
     }
 
-    output_file = f"prototypes/experiments/llm-as-judge-positional-unbias/results/results_{model_name.split('/')[-1]}.json"
+    output_file = f"results_{model_name.replace('/', '_')}.json"
     with open(output_file, "w") as f:
         json.dump(output, f, indent=2)
     print(f"Results saved to {output_file}")
@@ -450,8 +573,10 @@ def run_evaluation(model_name: str, n_pairs: int = 30, k: int = 20, verbose: boo
 
 def main():
     parser = argparse.ArgumentParser(description="LLM-as-Judge Calibration Experiment")
-    parser.add_argument("--model", type=str, default="mlx-community/Llama-3.2-3B-Instruct-4bit",
-                        help="MLX model to evaluate")
+    parser.add_argument("--model", type=str, default="gpt-4o-mini",
+                        help="Model to evaluate")
+    parser.add_argument("--provider", type=str, default="openai", choices=["mlx", "openai"],
+                        help="Backend provider: mlx (local) or openai (API)")
     parser.add_argument("--n-pairs", type=int, default=30,
                         help="Number of test pairs to evaluate")
     parser.add_argument("--k", type=int, default=20,
@@ -460,7 +585,11 @@ def main():
                         help="Print model inputs/outputs")
 
     args = parser.parse_args()
-    run_evaluation(args.model, args.n_pairs, args.k, args.verbose)
+
+    if args.provider == "openai":
+        run_evaluation_openai(args.model, args.n_pairs, args.k, args.verbose)
+    else:
+        run_evaluation_mlx(args.model, args.n_pairs, args.k, args.verbose)
 
 
 if __name__ == "__main__":
