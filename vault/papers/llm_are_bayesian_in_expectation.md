@@ -47,4 +47,4 @@ def optimal_k(n, epsilon=0.1, c=1.0):
 
 ## Code
 [[concepts/optimal-cot-length]]
-[cot_optimal.py](../prototypes/experiments/cot-length/cot_optimal.py)
+[llm-as-judge-positional-unbias](../prototypes/experiments/llm-as-judge-positional-unbias)
