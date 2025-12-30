@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+
+# HF
+*.safetensors
+*.bin
+*.pt
+
+# Obsidian (optional - remove if you want to sync settings)
+.obsidian/
+
+# Local scratch
+.scratch/
