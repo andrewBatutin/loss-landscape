@@ -4,7 +4,7 @@ Obsidian-compatible knowledge graph. All markdown.
 
 ## Navigation
 
-- [[inbox]] - raw idea dump
+- [[index]] - raw idea dump
 - `concepts/` - atomic ideas
 - `papers/` - paper breakdowns
 - `projects/` - mini research
